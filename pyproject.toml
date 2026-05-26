@@ -5,14 +5,14 @@ build-backend = "hatchling.build"
 [project]
 name = "china-trending-mcp"
 version = "0.1.0"
-description = "中国热搜聚合 MCP 服务器 - 提供微博、知乎热榜查询工具"
+description = "MCP Server for Chinese social media trending topics — Weibo hot search and Zhihu hot list"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [
-    { name = "Nous Research" }
+    { name = "521w" }
 ]
-keywords = ["mcp", "weibo", "zhihu", "trending", "china", "social-media"]
+keywords = ["mcp", "weibo", "zhihu", "trending", "china", "social-media", "news"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
