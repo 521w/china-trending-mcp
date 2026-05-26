@@ -1,0 +1,10 @@
+{
+    "name": "io.github.521w/china-trending-mcp",
+    "description": "MCP Server for Chinese social media trending topics — Weibo hot search and Zhihu hot list",
+    "url": "https://github.com/521w/china-trending-mcp",
+    "tools": ["get_weibo_hot", "get_zhihu_hot"],
+    "categories": ["social-media", "data", "news"],
+    "transport": "stdio",
+    "runtime": "python",
+    "license": "MIT"
+}
