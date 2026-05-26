@@ -1,0 +1,1 @@
+# china_trending_mcp - 中国热搜聚合 MCP 服务器
