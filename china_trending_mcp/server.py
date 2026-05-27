@@ -1,36 +1,50 @@
 """
 中国热搜聚合 MCP 服务器
-
+=======================
 提供微博热搜榜和知乎热榜查询工具。
-使用 MCP stdio 模式运行，可供 Claude Desktop、Cursor 等 MCP 客户端使用。
 
-启动方式：
-    python3 -m china_trending_mcp.server
-    或
-    china-trending-mcp
+工具列表：
+- get_weibo_hot: 获取微博热搜 Top50
+- get_zhihu_hot: 获取知乎热榜 Top50
 """
 
 import asyncio
 import json
+import logging
+import sys
 from typing import Any
+from functools import lru_cache
 
 import requests
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
-# ---------- 全局配置 ----------
+# ── 日志配置 ──────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+    stream=sys.stderr,
+)
+logger = logging.getLogger("china-trending-mcp")
 
-# 请求超时时间（秒）
+# ── 版本 ──────────────────────────────────────────────
+VERSION = "0.2.0"
+
+# ── 常量 ──────────────────────────────────────────────
+
 REQUEST_TIMEOUT = 15
+MAX_RETRIES = 3
+RETRY_DELAY = 1.0
 
 # 微博热搜 API
 WEIBO_API_URL = "https://weibo.com/ajax/side/hotSearch"
 WEIBO_HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
         "AppleWebKit/605.1.15 (KHTML, like Gecko) "
-        "Version/16.0 Mobile/15E148 Safari/604.1"
+        "Version/17.0 Mobile/15E148 Safari/604.1"
     ),
     "Referer": "https://weibo.com/",
     "Accept": "application/json, text/plain, */*",
@@ -40,25 +54,62 @@ WEIBO_HEADERS = {
 ZHIHU_API_URL = "https://www.zhihu.com/api/v4/search/top_search"
 ZHIHU_HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
         "AppleWebKit/605.1.15 (KHTML, like Gecko) "
-        "Version/16.0 Mobile/15E148 Safari/604.1"
+        "Version/17.0 Mobile/15E148 Safari/604.1"
     ),
     "Accept": "application/json, text/plain, */*",
 }
 
-# ---------- 网络请求 ----------
+# ── HTTP 客户端 ─────────────────────────────────────────
+
+
+class HTTPClient:
+    """带连接池和重试的 HTTP 客户端"""
+    
+    def __init__(self):
+        self._session: requests.Session | None = None
+    
+    @property
+    def session(self) -> requests.Session:
+        if self._session is None:
+            self._session = requests.Session()
+            adapter = requests.adapters.HTTPAdapter(
+                pool_connections=10,
+                pool_maxsize=10,
+                max_retries=0,
+            )
+            self._session.mount("http://", adapter)
+            self._session.mount("https://", adapter)
+        return self._session
+    
+    def get(self, url: str, headers: dict, timeout: int = REQUEST_TIMEOUT) -> requests.Response:
+        """带重试的 GET 请求"""
+        last_error: Exception | None = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                resp = self.session.get(url, headers=headers, timeout=timeout)
+                resp.raise_for_status()
+                return resp
+            except requests.RequestException as e:
+                last_error = e
+                logger.warning(f"请求失败 (尝试 {attempt + 1}/{MAX_RETRIES}): {url} - {e}")
+                if attempt < MAX_RETRIES - 1:
+                    import time
+                    time.sleep(RETRY_DELAY * (attempt + 1))
+        
+        raise last_error or requests.RequestException("未知错误")
+
+
+http_client = HTTPClient()
+
+# ── 网络请求 ──────────────────────────────────────────
 
 
 def _safe_request(url: str, headers: dict) -> tuple[bool, Any]:
-    """
-    安全地发起 HTTP GET 请求，返回 (成功标志, 数据或错误信息)。
-
-    不会因为网络问题而崩溃，始终返回可处理的结果。
-    """
+    """安全地发起 HTTP GET 请求，返回 (成功标志, 数据或错误信息)。"""
     try:
-        resp = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
-        resp.raise_for_status()
+        resp = http_client.get(url, headers)
         return True, resp.json()
     except requests.exceptions.Timeout:
         return False, "请求超时，请稍后重试"
@@ -72,7 +123,7 @@ def _safe_request(url: str, headers: dict) -> tuple[bool, Any]:
         return False, "API 返回数据格式异常"
 
 
-# ---------- 格式化输出 ----------
+# ── 格式化输出 ──────────────────────────────────────────
 
 
 def _format_weibo(items: list[dict]) -> str:
@@ -118,7 +169,7 @@ def _format_zhihu(items: list[dict]) -> str:
     return "\n".join(lines)
 
 
-# ---------- MCP 工具定义 ----------
+# ── MCP 工具定义 ────────────────────────────────────────
 
 
 async def get_weibo_hot() -> str:
@@ -128,15 +179,19 @@ async def get_weibo_hot() -> str:
     数据来源：https://weibo.com/ajax/side/hotSearch
     返回格式化的中文热搜列表，包含排名、标题、热度和摘要。
     """
+    logger.info("获取微博热搜...")
     ok, data = _safe_request(WEIBO_API_URL, WEIBO_HEADERS)
     if not ok:
+        logger.warning(f"微博热搜获取失败: {data}")
         return f"❌ 微博热搜获取失败：{data}"
 
     # 微博 API 结构：data.realtime 是热搜数组
     realtime = data.get("data", {}).get("realtime", [])
     if not realtime:
+        logger.warning("微博热搜榜无数据")
         return "⚠️ 微博热搜榜暂时无数据，请稍后再试"
 
+    logger.info(f"微博热搜获取成功: {len(realtime)} 条")
     return _format_weibo(realtime)
 
 
@@ -147,20 +202,24 @@ async def get_zhihu_hot() -> str:
     数据来源：https://www.zhihu.com/api/v4/search/top_search
     返回格式化的中文热榜列表，包含排名和标题。
     """
+    logger.info("获取知乎热榜...")
     ok, data = _safe_request(ZHIHU_API_URL, ZHIHU_HEADERS)
     if not ok:
+        logger.warning(f"知乎热榜获取失败: {data}")
         return f"❌ 知乎热榜获取失败：{data}"
 
     # 知乎 API 结构：top_search.words 是热榜数组
     top_search = data.get("top_search", {})
     words = top_search.get("words", [])
     if not words:
+        logger.warning("知乎热榜无数据")
         return "⚠️ 知乎热榜暂时无数据，请稍后再试"
 
+    logger.info(f"知乎热榜获取成功: {len(words)} 条")
     return _format_zhihu(words)
 
 
-# ---------- MCP 服务器 ----------
+# ── MCP 服务器 ──────────────────────────────────────────
 
 
 def _make_server() -> Server:
@@ -194,14 +253,19 @@ def _make_server() -> Server:
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         """调用指定的工具并返回结果。"""
-        if name == "get_weibo_hot":
-            result = await get_weibo_hot()
-        elif name == "get_zhihu_hot":
-            result = await get_zhihu_hot()
-        else:
-            result = f"❌ 未知工具：{name}"
+        try:
+            if name == "get_weibo_hot":
+                result = await get_weibo_hot()
+            elif name == "get_zhihu_hot":
+                result = await get_zhihu_hot()
+            else:
+                result = f"❌ 未知工具：{name}"
 
-        return [TextContent(type="text", text=result)]
+            return [TextContent(type="text", text=result)]
+            
+        except Exception as e:
+            logger.exception(f"工具执行失败: {name}")
+            return [TextContent(type="text", text=f"❌ 执行失败: {e}")]
 
     return server
 
@@ -219,9 +283,11 @@ async def _run_async() -> None:
 
 def main() -> None:
     """入口函数，启动 MCP stdio 服务器。"""
+    logger.info(f"China Trending MCP Server v{VERSION} 启动")
     try:
         asyncio.run(_run_async())
     except KeyboardInterrupt:
+        logger.info("服务器已停止")
         pass
 
 
