@@ -79,6 +79,19 @@ pip install -e .
 
 This project depends on public platform endpoints. If Weibo or Zhihu changes their response format or access rules, the server may need updates.
 
+## Verified Status
+
+Verified on Termux/Android with Python 3.13:
+
+```bash
+python -m venv .venv
+. .venv/bin/activate
+pip install -e .
+china-trending-mcp
+```
+
+MCP initialization, tool listing, and `get_zhihu_hot` tool calls were verified successfully.
+
 ## License
 
 MIT
